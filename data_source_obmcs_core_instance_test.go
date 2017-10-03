@@ -10,6 +10,8 @@ import (
 	baremetal "github.com/oracle/bmcs-go-sdk"
 
 	"github.com/stretchr/testify/suite"
+	"fmt"
+	"time"
 )
 
 type DatasourceCoreInstanceTestSuite struct {
@@ -20,6 +22,11 @@ type DatasourceCoreInstanceTestSuite struct {
 	Providers 		map[string]terraform.ResourceProvider
 	ResourceName	string
 }
+
+var t = time.Now()
+var timestamp = fmt.Sprintf("%d%02d%02d%02d%02d%02d", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
+var instance_display_name = "instance" + timestamp
+
 
 func (s *DatasourceCoreInstanceTestSuite) SetupTest() {
 	s.Client = testAccClient
@@ -52,50 +59,57 @@ func (s *DatasourceCoreInstanceTestSuite) SetupTest() {
 		operating_system = "Oracle Linux"
 		operating_system_version = "7.3"
 		limit = 1
-	}
+	}`
 
-	resource "oci_core_instance" "inst_create" {
-		availability_domain = "${data.oci_identity_availability_domains.ADs.availability_domains.0.name}"
-		compartment_id = "${var.compartment_id}"
-		subnet_id = "${oci_core_subnet.sb.id}"
-		image = "${data.oci_core_images.img.images.0.id}"
-		shape = "VM.Standard1.1"
-		metadata {
-			ssh_authorized_keys = "${var.ssh_public_key}"
-		}
-		timeouts {
-			create = "15m"
-		}
-	}
-
-	data "oci_core_instances" "inst_read" {
-		compartment_id = "${var.compartment_id}"
-		limit = 1
-	}	`
-
-	s.ResourceName = "oci_core_instances.inst_read"
+	s.ResourceName = "data.oci_core_instances.inst"
 }
 
 func (s *DatasourceCoreInstanceTestSuite) TestAccDatasourceCoreInstance_basic() {
+	var metadata_ssh_key_entry = "ssh_authorized_keys"
 	resource.Test(s.T(), resource.TestCase {
 		PreventPostDestroyRefresh: 	true,
 		Providers:					s.Providers,
 		Steps:	[]resource.TestStep{
 			{
-				ImportState: true,
+				ImportState:       true,
 				ImportStateVerify: true,
-				Config: s.Config,
+				Config:            s.Config + `
+				resource "oci_core_instance" "inst" {
+					availability_domain = "${data.oci_identity_availability_domains.ADs.availability_domains.0.name}"
+					compartment_id = "${var.compartment_id}"
+					display_name = "` + instance_display_name + `"
+					subnet_id = "${oci_core_subnet.sb.id}"
+					image = "${data.oci_core_images.img.images.0.id}"
+					shape = "VM.Standard1.1"
+					metadata {` +
+						metadata_ssh_key_entry + `= "${var.ssh_public_key}"
+					}
+					timeouts {
+						create = "15m"
+					}
+				}`,
+			},
+			{
+				Config: s.Config + `
+				data "oci_core_instances" "inst" {
+					compartment_id = "${var.compartment_id}"
+					availability_domain = "${data.oci_identity_availability_domains.ADs.availability_domains.0.name}"
+					display_name = "` + instance_display_name + `"
+					limit = 1
+				}`,
 				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(s.ResourceName,"availability_domain"),
-					resource.TestCheckResourceAttr(s.ResourceName, "instances.#", "1"),
-					resource.TestCheckResourceAttrSet(s.ResourceName,"instances.0.id"),
+					// check to make sure that the display_name matches what we set it to first.
+					// Otherwise, the rest of the check could produce a false positive
 					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.display_name"),
+					resource.TestCheckResourceAttr(s.ResourceName, "instances.#", "1"),
+					resource.TestCheckResourceAttrSet(s.ResourceName,"instances.0.availability_domain"),
+					resource.TestCheckResourceAttrSet(s.ResourceName,"instances.0.id"),
 					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.region"),
 					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.state"),
 					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.shape"),
 					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.image"),
-					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.ipxe_script"),
-					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.metadata"),
+					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.metadata.%"),
+					resource.TestCheckResourceAttrSet(s.ResourceName, "instances.0.metadata." + metadata_ssh_key_entry),
 				),
 			},
 		},
